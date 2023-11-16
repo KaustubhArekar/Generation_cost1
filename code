@@ -1,0 +1,565 @@
+
+import pandas as pd
+import numpy as np
+
+from pulp import LpProblem, LpVariable, LpMinimize, lpSum, LpStatus# Define input and output directory paths that hold the input and output csv/xlsx files
+INPUT_PATH = 'D:\MpEnsystems\Demand Flexibility Project\Modelling\Demad_felxibility_model/'
+OUTPUT_PATH = 'D:\MpEnsystems\Demand Flexibility Project\Modelling\Demad_felxibility_model/'
+
+import PySimpleGUI as sg
+import matplotlib.pyplot as plt
+import numpy as np
+
+RE_PPA = pd.read_excel(INPUT_PATH + 'RE power PPA.xlsx') 
+
+# PPA data for conventional plants   
+ppa =pd.read_excel(INPUT_PATH + 'MODCON.xlsx')
+
+#RE Power generation profiles
+RE1=pd.read_excel(INPUT_PATH + 'RE.xlsx')
+
+#Demand data--------------------------------------------------------------------
+# Read consumer profile
+# cp = pd.read_excel(INPUT_PATH + 'Consumer indexing.xlsx') 
+
+# Market data
+market= pd.read_excel(INPUT_PATH+'market.xlsx') #  Slot wise market prices
+market_price = market['Price']
+
+# direct load control resource data
+direct_LC = pd.read_excel(INPUT_PATH+'direct_load_control.xlsx')
+
+DLC_price=direct_LC['Price']
+
+# Read tariff plan
+tariff = pd.read_excel(INPUT_PATH + 'tariffplan.xlsx')
+
+# Solar Rooftop
+solarperkw = pd.read_excel(INPUT_PATH + 'solarrooftop.xlsx')
+
+# Read end use assumption of all consumer types
+base_asp = {}
+base_asp['residential'] = pd.read_excel(INPUT_PATH + 'residential_asp.xlsx').iloc[:,:]
+base_asp['hospital'] = pd.read_excel(INPUT_PATH + 'hospital_asp.xlsx').iloc[:,:]
+base_asp['hotel'] = pd.read_excel(INPUT_PATH + 'hotel_asp.xlsx').iloc[:,:]
+base_asp['mall'] = pd.read_excel(INPUT_PATH + 'mall_asp.xlsx').iloc[:,:]
+base_asp['office'] = pd.read_excel(INPUT_PATH + 'office_asp.xlsx').iloc[:,:]
+base_asp['IT'] = pd.read_excel(INPUT_PATH + 'IT_asp.xlsx').iloc[:,:]
+
+pu_load_res=base_asp['residential']['Total load'].max()
+pu_load_hospital=base_asp['hospital']['Total load'].max()
+pu_load_hotel=base_asp['hotel']['Total load'].max()
+pu_load_mall=base_asp['mall']['Total load'].max()
+pu_load_office=base_asp['office']['Total load'].max()
+pu_load_IT=base_asp['IT']['Total load'].max()
+
+
+# variables-----------------------------------------------------------------------------
+Solar_pu_cost = RE_PPA.iloc[0,0]
+Wind_pu_cost = RE_PPA.iloc[0,1]
+
+
+# Ramping up limit for each plant
+ramping_up = 1*ppa['Ramping_up'] 
+
+# Ramping down limit for each plant
+ramping_down =1* ppa['Ramping down']
+
+# Fixed cost for each plant   
+fixed_cost = ppa['Fixed cost']  
+# Variable cost for each plant
+Variable_cost=ppa['Variable cost'] 
+
+#generation capacity for each plant  
+generation_capacity=ppa['Capacity'] 
+
+# generation startup cost not considered in here
+startup_cost=ppa['Startup cost'] 
+#RE integration level for base case it is 1
+RE_integration =1
+
+# Tariff types used in analysis
+tariff_types = ['residential', 'commercial']
+
+# tariff plans
+tariff_plan = pd.DataFrame()
+tariff_plan['residential'] = tariff[tariff.columns[tariff.columns.str.contains('Residential')]]
+tariff_plan['commercial'] = tariff[tariff.columns[tariff.columns.str.contains('Commercial')]]
+sectors = ['LT-COMMERCIAL', 'LT-DOMESTIC', 'HT Commercial 22 KV']
+# Only first feeder
+# num_consumers = [cp.loc[cp['Feeder Name'].str.contains(s)].values[0,2] for s in sectors]
+
+customer_segments = ['residential','hospital','hotel','mall','office','IT']
+
+seg_tariff = {
+    'residential': 'residential',
+    'hospital': 'commercial',
+    'hotel': 'commercial',
+    'mall': 'commercial',
+    'office': 'commercial',
+    'IT': 'commercial'
+}
+
+
+## Configurable parameters---------------------------------------------------------------------
+
+rs=float(input('Fraction of residential consumer with solar PV: '))
+hss=float(input('Fraction of hospital consumer with solar PV: '))
+hts=float(input('Fraction of hotel consumer with solar PV: '))
+ms=float(input('Fraction of mall consumer with solar PV: '))
+os=float(input('Fraction of office consumer with solar PV: '))
+iss=float(input('Fraction of IT consumer with solar PV: '))
+
+
+
+# Fractions of consumers with solar installations
+fs = pd.DataFrame({'solar': {'residential':rs,
+                             'hospital':hss,
+                             'hotel':hts,
+                             'mall':ms,
+                             'office':os,
+                             'IT':iss},
+                   'nonsolar': {'residential':1-rs,
+                                'hospital':1-hss,
+                                'hotel':1-hts,
+                                'mall':1-ms,
+                                'office':1-os,
+                                'IT':1-iss}
+                    })
+
+rpd=float(input('Fraction of residential PV consumer participating in DF: '))
+hspd=float(input('Fraction of hospital PV consumer participating in DF: '))
+htpd=float(input('Fraction of hotel PV consumer participating in DF: '))
+mpd=float(input('Fraction of mall PV consumer participating in DF: '))
+opd=float(input('Fraction of office PV consumer participating in DF: '))
+ispd=float(input('Fraction of IT PV consumer participating in DF: '))
+
+rnpd=float(input('Fraction of residential non PV consumer participating in DF: '))
+hnspd=float(input('Fraction of hospital non PV consumer participating in DF: '))
+hntpd=float(input('Fraction of hotel non PV consumer participating in DF: '))
+mnpd=float(input('Fraction of mall non PV consumer participating in DF: '))
+onpd=float(input('Fraction of office non PV consumer participating in DF: '))
+isnpd=float(input('Fraction of IT non PV consumer participating in DF: '))
+
+# Fractions of consumers participating in the DF program
+fp = pd.DataFrame({'solar': {'residential':rpd,
+                             'hospital':hspd,
+                             'hotel':htpd,
+                             'mall':mpd,
+                             'office':opd,
+                             'IT':ispd},
+                  'nonsolar': {'residential':rnpd,
+                             'hospital':hnspd,
+                             'hotel':hntpd,
+                             'mall':mnpd,
+                             'office':onpd,
+                             'IT':isnpd},
+                    })
+
+rsd=float(input('Peak load residential consumer (MW): '))
+hsp=float(input('Peak load hospital consumer (MW): '))
+ht=float(input('Peak load hotel consumer (MW): '))
+mll=float(input('Peak load mall consumer (MW): '))
+off=float(input('Peak load office consumer (MW): '))
+ito=float(input('Peak load IT office consumer (MW): '))
+
+# Total number of consumers part of the feeder/ utility
+num_consumers = pd.DataFrame([{'residential': rsd*1000/pu_load_res, 
+                               'hospital': hsp*1000/pu_load_hospital, 
+                               'hotel': ht*1000/pu_load_hotel, 
+                               'mall': mll*1000/pu_load_mall, 
+                               'office': off*1000/pu_load_mall, 
+                               'IT': ito*1000/pu_load_IT}
+                            ])
+
+
+# Assumed installed solar capacity in KW
+solar_capacity = pd.DataFrame([{'residential': 1, 
+                                'hospital': 100, 
+                                'hotel':100, 
+                                'mall':100, 
+                                'office':100, 
+                                'IT':100}
+                            ])
+## Minimum technical threshold such that minimum demand across slots
+# must be higher than this % of generation per slot
+technical_minimum_threshold = 0.55
+technical_minimum=generation_capacity*technical_minimum_threshold
+technical_minimum[len(technical_minimum)-1]=0 # for the last unconstrained plant
+
+# T&D and other losses
+losses = 0.3
+
+# Factors for incremental steps during iterations
+lambda_t = {'residential': 0.05, 'commercial': 0.07}
+
+# Tariff threholds at 20% of max and min
+tariff_max = {'residential': 1.2*max(tariff_plan['residential']), 
+              'commercial':1.2*max(tariff_plan['commercial'])}
+tariff_min = {'residential': 0.8*min(tariff_plan['residential']), 
+              'commercial':0.8*min(tariff_plan['commercial'])}
+
+max_iters = 20
+epsilon = 0.005
+
+base_loads = {}
+base_solar = {}
+base_loads_solar = {}
+
+
+for segment in customer_segments: 
+    base_loads[segment] = base_asp[segment]['Total load'].copy()
+    base_solar[segment] = solar_capacity[segment].values[0]*solarperkw.iloc[:,1]
+    base_loads_solar[segment] = base_loads[segment].subtract(base_solar[segment], axis=0)
+    
+
+
+# Convert lists to Pandas dataframes
+base_loads_df = pd.DataFrame(base_loads)
+base_loads_solar_df = pd.DataFrame(base_loads_solar)
+
+
+# compute number of consumers in each category, solar/nonsolar and participating solar/nonsolar
+solar_consumers = fs['solar']*num_consumers
+nonsolar_consumers = fs['nonsolar']*num_consumers
+participating_solar_consumers = fp['solar']*solar_consumers
+participating_nonsolar_consumers = fp['nonsolar']*nonsolar_consumers
+
+def aggregate_base_load():    
+    df = {}
+
+    df['nonsolar'] = {}
+    df['solar'] = {}
+    df['total'] = pd.DataFrame()
+
+    total_bill = 0
+
+    for segment in customer_segments:
+        df['nonsolar'][segment] = base_loads[segment].copy()
+        df['solar'][segment] = base_loads_solar[segment].copy()
+        df['nonsolar'][segment] *= nonsolar_consumers[segment].values[0]
+        df['solar'][segment] *= solar_consumers[segment].values[0]
+        df['total'][segment] = df['nonsolar'][segment] + df['solar'][segment]
+        
+        # compute the bill
+        total_bill += sum(df['solar'][segment] * tariff_plan[seg_tariff[segment]])
+        total_bill += sum(df['nonsolar'][segment] * tariff_plan[seg_tariff[segment]])
+        
+        # convert total units from KW to MW
+        df['total'][segment] /= 1e3
+    df['total']['agg'] = df['total'].sum(axis=1)
+    return df, total_bill
+
+def compute_gen_curve(projected_demand,DLC_LB,DLC_UB, n):
+    solar = RE_integration * RE1['Solar']
+    wind = RE1['Wind']
+
+    num_plants = len(generation_capacity)
+    num_hours = len(projected_demand.values)
+
+    # RE Power forecasted generation profile
+    RE = solar + wind
+
+    # Net demand for conventional generation
+    demand = projected_demand.values - RE
+
+    # Optimisation problem
+    problem = LpProblem("Power Generation Optimization", LpMinimize)
+
+    # Define the decision variables
+    schedule = [[LpVariable(f"Schedule_{t}_{p}", lowBound=0) for p in range(num_plants)] for t in range(num_hours)]
+
+
+    # Set the objective function
+    problem += lpSum(
+        schedule[t][p] * Variable_cost[p]
+        for t in range(num_hours)
+        for p in range(num_plants)
+    )
+
+    # Add the constraints
+   
+
+    # Ramping up and down constraints 1% for thermal, 3% of gas, 10% of hydro
+    for t in range(num_hours - 1):
+        for p in range(num_plants):
+            del_schedule = schedule[t + 1][p] - schedule[t][p]
+            problem += del_schedule <= ramping_up[p]
+            problem += del_schedule >= ramping_down[p]
+
+    # Technical Minimum 55%
+    for p in range(num_plants):
+        for t in range(num_hours):
+            x = schedule[t][p]
+            problem += x >= technical_minimum[p]
+
+    # Total generation in slot i = Total demand in slot i
+    for t in range(num_hours):
+        problem += (
+            lpSum(schedule[t][p] for p in range(num_plants))
+            == demand[t]
+        )
+
+    # Maximum generation limitation max generation by plant i in any slot <= max generation capacity of plant i
+    for t in range(num_hours):
+        for p in range(num_plants):
+            problem += schedule[t][p] <= ppa["Capacity"][p]
+            problem += schedule[t][p] >= 0
+
+    # Solve the problem
+    problem.solve()
+    print("Status:", LpStatus[problem.status])
+
+    schedule_gen = pd.DataFrame(index=range(num_hours), columns=range(num_plants))
+   
+
+    for t in range(num_hours):
+        for p in range(num_plants):
+            schedule_gen.at[t, p] = schedule[t][p].varValue
+
+   
+
+
+    # Cost of generation
+    daily_generation = schedule_gen.sum() * (24 / num_hours)
+    daily_generation_2 = schedule_gen.sum(axis=1)
+
+    # RE cost
+    solar_cost = Solar_pu_cost * solar
+    wind_cost = wind * Wind_pu_cost
+    RE_cost = solar_cost + wind_cost
+    
+
+
+    # Required output ............................
+    # Slot-wise total cost INR / conventional + RE
+    slot_wise_cost = (
+        schedule_gen.dot(np.array(Variable_cost)) + RE_cost
+    )
+    slot_wise_cost1 = slot_wise_cost * 1000 * 24 / num_hours  # INR/Hour
+    slot_wise_pu = slot_wise_cost1 / (1000 * demand * 24 / num_hours)  # INR/kWH/Hour
+
+    return slot_wise_cost, slot_wise_cost1, slot_wise_pu
+
+        
+
+def optimal_load_curve1(tariff1, load):
+#     import os
+    
+#     os.chdir('D:\MpEnsystems\Demand Flexibility Project\DATA\Commercial consumer data\scenario')
+
+#     load=pd.read_excel('Hotel_battery.xlsx') # input = load assumptions (shift profiles, adjustable load, base load etc)
+#     tariff=pd.read_excel('tariff.xlsx') # input = tariff struture
+
+    tariff=pd.DataFrame()
+    wh_load = load.iloc[:, 1:6]
+    wp_load = load.iloc[:, 6:11]
+    b_charge = load.iloc[:, 11:17]
+    b_discharge = load.iloc[:, 17:23]
+    hvac_max = load.iloc[:, 23]
+    hvac_min = 0.8 * hvac_max
+    fixed_load = load.iloc[:, 24]
+#     t=load.iloc[:,25]
+   
+    tariff['Tariff']=tariff1
+    
+    
+    
+    hours = len(fixed_load)
+    wpp = len(wp_load.columns)
+    whp = len(wh_load.columns)
+    bcp = len(b_charge.columns)
+    bdp = len(b_discharge.columns)
+
+    # Create the LP problem
+    Bill_optimization = LpProblem("Bill_optimization", LpMinimize)
+
+    # Variables
+    hvac = [LpVariable(f"{i}_hvac", lowBound=hvac_min[i]) for i in range(hours)]
+
+    shift_pump = [LpVariable(f"Shift_pump_{i}", lowBound=0, cat='Binary') for i in range(wpp)]
+    shift_wh = [LpVariable(f"Shift_wh_{i}", lowBound=0, cat='Binary') for i in range(whp)]
+    shift_bc = [LpVariable(f"Shift_bc_{i}", lowBound=0, cat='Binary') for i in range(bcp)]
+    shift_bd = [LpVariable(f"Shift_bd_{i}", lowBound=0, cat='Binary') for i in range(bdp)]
+
+    # Constraints
+    Bill_optimization += lpSum(shift_pump) == 1
+    Bill_optimization += lpSum(shift_wh) == 1
+    Bill_optimization += lpSum(shift_bc) == 1
+    Bill_optimization += lpSum(shift_bd) == 1
+
+    for t in range(hours):
+        Bill_optimization += hvac_min[t] <= hvac[t] <= 1.2*hvac_max[t]
+
+    Bill_optimization += lpSum(hvac[t] for t in range(hours)) >= 1* hvac_max.sum()
+
+    # Set the objective function
+    Bill_optimization += lpSum((hvac[t] + wh_load.iloc[t, :].dot(shift_wh) + wp_load.iloc[t, :].dot(shift_pump) + b_charge.iloc[t, :].dot(shift_bc) + b_discharge.iloc[t, :].dot(shift_bd)) * tariff['Tariff'][t] for t in range(hours))
+
+    # Solve the problem
+    Bill_optimization.solve()
+
+    # Check the status of the solution
+#     print("Status:", LpStatus[Bill_optimization.status])
+
+    # Variables to DataFrames
+    hvac_sc = pd.DataFrame(index=range(len(hvac)), columns=range(1))
+    wp_sc = pd.DataFrame(index=range(len(shift_pump)), columns=range(1))
+    wh_sc = pd.DataFrame(index=range(len(shift_wh)), columns=range(1))
+    bc_sc = pd.DataFrame(index=range(len(shift_bc)), columns=range(1))
+    bd_sc = pd.DataFrame(index=range(len(shift_bd)), columns=range(1))
+
+    for i in range(len(hvac)):
+        hvac_sc.iloc[i,0]=hvac[i].varValue
+    
+    for i in range(len(shift_pump)):
+        wp_sc.iloc[i,0]=shift_pump[i].varValue
+        if wp_sc.iloc[i,0]==1:
+            wpsc_n = i
+            
+    for i in range(len(shift_wh)):
+        wh_sc.iloc[i,0]=shift_wh[i].varValue
+        if wh_sc.iloc[i,0]==1:
+            whsc_n = i
+            
+    for i in range(len(shift_bc)):
+        bc_sc.iloc[i,0]=shift_bc[i].varValue
+        if bc_sc.iloc[i,0]==1:
+            bcsc_n = i
+            
+    for i in range(len(shift_bd)):
+        bd_sc.iloc[i,0]=shift_bd[i].varValue
+        if bd_sc.iloc[i,0]==1:
+            bdsc_n = i
+    #-----------------------------------------------------------------------------------------------------
+    ## output = load profile    
+    load_profile =fixed_load.iloc[:]+b_charge.iloc[:,bcsc_n]+b_discharge.iloc[:,bdsc_n]+wp_load.iloc[:,wpsc_n]+wh_load.iloc[:,whsc_n]+hvac_sc.iloc[0:24,0]
+    return load_profile
+
+
+def compute_optimal_load_curve1(pricing_signal):
+    optimal_load_curve = pd.DataFrame()
+    total_bill = 0
+
+#     print(base_loads_df, nonsolar_consumers)
+    a = base_loads_df * (nonsolar_consumers - participating_nonsolar_consumers).iloc[0] + \
+        base_loads_solar_df * (solar_consumers - participating_solar_consumers).iloc[0]
+
+    b = pd.DataFrame()
+    c = pd.DataFrame()
+
+    for s in customer_segments:   
+        base_assumptions = base_asp[s]
+        tarrif= pricing_signal[seg_tariff[s]]
+#         print(tarrif, base_assumptions)
+        optimal_load=optimal_load_curve1(tarrif,base_assumptions)
+       
+                
+        b[s] = optimal_load * participating_nonsolar_consumers[s].values[0]
+
+        c[s] = (optimal_load - base_solar[s]) * participating_solar_consumers[s].values[0]
+        
+        # compute the bill
+        total_bill += sum(a[s] * tariff_plan[seg_tariff[s]])
+        total_bill += sum(b[s] * pricing_signal[seg_tariff[s]])
+        total_bill += sum(c[s] * pricing_signal[seg_tariff[s]])
+
+    # aggregate the fixed plus optimal load
+    optimal_load_curve = a + b + c
+#     print(optimal_load_curve.iloc[0,:].sum()/1e3)
+    
+    optimal_load_curve['agg'] = optimal_load_curve.sum(axis=1)
+    optimal_load_curve /= 1e3 # convert KW to MW for generation cost computations
+    return optimal_load_curve, total_bill
+
+def similar_costs(curr,prev):
+    cost_diff = (prev-curr)/prev
+    if cost_diff > 0 and cost_diff < epsilon:
+        return True
+    else: 
+        return False
+    
+n = 0
+
+# set initial pricing signal
+pricing_signal = {}
+iterative_load = {}
+iterative_gen_cost = {}
+iterative_bill = {}
+iterative_gen_cost_total = {}
+iterative_dlc ={}
+
+DLC_LB = direct_LC['LB']*0
+DLC_UB = direct_LC['UB']*0
+
+
+# Aggregate base loads and add losses to compute projected_demand
+total_base_load, total_bill = aggregate_base_load()
+
+projected_demand = total_base_load['total']['agg'] / (1 - losses)
+
+# print(projected_demand.max())
+
+# Compute generation_costs for aggregate base loads
+slot_wise_cost, slot_wise_cost1, slot_wise_pu = compute_gen_curve(projected_demand,n)
+iterative_gen_cost[n] = slot_wise_pu
+iterative_load[n] = projected_demand
+iterative_bill[n] = total_bill
+iterative_gen_cost_total[n] =slot_wise_cost1
+iterative_dlc[n]=dlc
+
+# print(slot_wise_cost[2])
+
+pricing_signal[n] = tariff_plan
+prev_gen_cost1 = slot_wise_cost1
+
+DLC_LB = direct_LC['LB']
+DLC_UB = direct_LC['UB']
+# DLC_LB.plot()
+
+## pricing signal update algorithm
+while n < max_iters:        
+    #1 - send pricing signal to consumers
+    n += 1
+    
+    pricing_signal[n] = pricing_signal[n-1].copy()
+
+    #2 - consumers send optimal load curves
+    optimal_load_curve, optimal_bill = compute_optimal_load_curve1(pricing_signal[n])
+#     print(optimal_load_curve)
+    
+    #3 - aggregate load curve, add losses and compute gen curve
+    projected_optimal_demand = optimal_load_curve['agg'] / (1 - losses)
+#     print(projected_optimal_demand.max())
+    
+    #4 - compute lowest generation cost
+    _,curr_gen_cost,curr_slot_pu = compute_gen_curve(projected_optimal_demand, n)
+    mean_pu_cost = curr_slot_pu.mean()
+#     curr_gen_cost = curr_slot_pu
+    # Store intermediate variables through iterations
+    iterative_load[n] = projected_optimal_demand
+    iterative_bill[n] = optimal_bill
+    iterative_gen_cost[n] = curr_slot_pu
+    iterative_gen_cost_total[n]=curr_gen_cost
+    iterative_dlc[n]=dlc
+    
+    
+#     print(curr_gen_cost.sum()/1e7,prev_gen_cost1.sum()/1e7)
+    #5 - Check if algorithm converges, else update the pricing signal (cost diff less than 0.5% of prev cost)
+    if similar_costs(curr_gen_cost.sum(), prev_gen_cost1.sum()): break  
+#     print(curr_gen_cost - prev_gen_cost1)
+#     print((curr_gen_cost.sum()-prev_gen_cost.sum())/1e7)
+    for t in lambda_t.keys():
+        for j in range(24):
+            if curr_slot_pu[j]<mean_pu_cost:
+                pricing_signal[n][t][j] += 1.2*lambda_t[t] * (curr_slot_pu[j]-mean_pu_cost)
+            else:
+                pricing_signal[n][t][j] += 0.8*lambda_t[t] * (curr_slot_pu[j]-mean_pu_cost)
+                
+            
+    prev_gen_cost = curr_slot_pu
+    prev_gen_cost1  = curr_gen_cost
+    
+    
+    nn=n
+    
